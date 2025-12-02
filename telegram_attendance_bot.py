@@ -325,8 +325,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.type in ("group", "supergroup"):
         # ensure group exists
         group_id = ensure_group(chat.id, chat.title)
-        admins = await context.bot.get_chat_administrators(chat.id)
-        if user.id in [admin.user.id for admin in admins]:
+        # Auto-admin: if no members yet, make starter admin
+        if len(get_all_members(group_id)) == 0:
             add_member_db(group_id, user.id, user.full_name, role="admin")
         # add the user as admin by default if they are group creator? We keep simple: user must /register to be member
         await update.message.reply_text(
