@@ -306,12 +306,28 @@ APP_INSTANCE = None
 # -------- Command handlers (async) --------
 
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    await update.message.reply_text(
+        "Commands:\n"
+        "/register - To register for the meeting(every member)\n"
+        "/add_member @username - To add member(Admin only)\n "
+        "/promote ID - To promote member to admin role,where ID is the member's Telegram numeric ID(Admin only)\n"
+        "/attendance - bot posts a list of names with buttons(every member)\n"
+        "/report latest - see who is present/absent(every member)\n"
+        "/export latest - downloads a perfect CSV file(every member)"
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     if chat.type in ("group", "supergroup"):
         # ensure group exists
         group_id = ensure_group(chat.id, chat.title)
+        admins = await context.bot.get_chat_administrators(chat.id)
+        if user.id in [admin.user.id for admin in admins]:
+            add_member_db(group_id, user.id, user.full_name, role="admin")
         # add the user as admin by default if they are group creator? We keep simple: user must /register to be member
         await update.message.reply_text(
             "Hello! I'm AttendanceBot. Members should register using /register <Full name>. Admins can add members with /add_member @username Full Name."
@@ -693,6 +709,7 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def register_handlers(app):
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("register", register))
     app.add_handler(CommandHandler("add_member", add_member))
