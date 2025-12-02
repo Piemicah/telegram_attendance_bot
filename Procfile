@@ -1,0 +1,1 @@
+worker: python telegram_attendance_bot.py
