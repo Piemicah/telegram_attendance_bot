@@ -322,19 +322,45 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
-    if chat.type in ("group", "supergroup"):
-        # ensure group exists
-        group_id = ensure_group(chat.id, chat.title)
-        # Auto-admin: if no members yet, make starter admin
-        if len(get_all_members(group_id)) == 0:
-            add_member_db(group_id, user.id, user.full_name, role="admin")
-        # add the user as admin by default if they are group creator? We keep simple: user must /register to be member
+
+    if chat.type not in ("group", "supergroup"):
         await update.message.reply_text(
-            "Hello! I'm AttendanceBot. Members should register using /register <Full name>. Admins can add members with /add_member @username Full Name."
+            "Please add me to a group and use me there for attendance."
+        )
+        return
+
+    # Ensure group exists in DB
+    group_id = ensure_group(chat.id, chat.title)
+
+    # Check if this group already has at least one member
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM members WHERE group_id = ?", (group_id,))
+    member_count = cur.fetchone()[0]
+
+    # Register the person who sent /start (usually the group creator/admin)
+    role = "member"
+    full_name = user.full_name
+
+    if member_count == 0:
+        role = "admin"  # ← First person = admin automatically
+
+    add_member_db(group_id, user.id, full_name, role)
+
+    if role == "admin":
+        await update.message.reply_text(
+            "Hello! I'm AttendanceBot.\n\n"
+            f"Welcome {full_name}! As the first person to start me in this group, "
+            "you have been automatically made an admin.\n\n"
+            "• Members can now register with /register\n"
+            "• Start attendance with /attendance\n"
+            "• Schedule recurring sessions with /schedule\n"
+            "Enjoy!"
         )
     else:
         await update.message.reply_text(
-            "Use me inside a group where you manage attendance."
+            "Hello! I'm AttendanceBot.\n"
+            "Members should register using /register <Full Name>.\n"
+            "Admins can start attendance with /attendance"
         )
 
 
