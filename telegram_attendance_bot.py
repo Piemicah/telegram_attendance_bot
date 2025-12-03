@@ -318,7 +318,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/attendance - bot posts a list of names with buttons(every member)\n"
         "/report latest - see who is present/absent(every member)\n"
         "/export latest - downloads a perfect CSV file(every member)\n"
-        "/schedule <day of week> <hour> <minutes> <job_title>"
+        "/schedule <day of week> <hour> <minutes> <job_title>\n"
+        "/end_session <session_id|latest>"
     )
 
 
