@@ -92,6 +92,7 @@ def init_db():
             message_id INTEGER,
             created_by INTEGER,
             created_at TEXT,
+            closed INTEGER DEFAULT 0,
             FOREIGN KEY (group_id) REFERENCES groups(id)
         )
         """
@@ -310,57 +311,98 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Commands:\n"
+        "/start - starts the bot (any member)\n"
         "/register - To register for the meeting(every member)\n"
         "/add_member @username - To add member(Admin only)\n "
         "/promote ID - To promote member to admin role,where ID is the member's Telegram numeric ID(Admin only)\n"
         "/attendance - bot posts a list of names with buttons(every member)\n"
         "/report latest - see who is present/absent(every member)\n"
-        "/export latest - downloads a perfect CSV file(every member)"
+        "/export latest - downloads a perfect CSV file(every member)\n"
+        "/schedule <day of week> <hour> <minutes> <job_title>"
     )
+
+
+async def end_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type not in ("group", "supergroup"):
+        await update.message.reply_text("Use this command in a group chat.")
+        return
+
+    group = get_group_by_chat(chat.id)
+    if not group:
+        await update.message.reply_text("Group not registered.")
+        return
+
+    group_id = group[0]
+    invoker = get_member_by_telegram(group_id, user.id)
+    if not invoker or invoker[2] != "admin":
+        await update.message.reply_text("Only admins can end a session.")
+        return
+
+    cur = conn.cursor()
+
+    # Parse session
+    if context.args and context.args[0].lower() == "latest":
+        cur.execute(
+            "SELECT id, message_id FROM attendance_sessions WHERE group_id = ? ORDER BY id DESC LIMIT 1",
+            (group_id,),
+        )
+    else:
+        if not context.args:
+            await update.message.reply_text("Usage: /end_session <session_id|latest>")
+            return
+        try:
+            sid = int(context.args[0])
+        except:
+            await update.message.reply_text("Invalid session ID.")
+            return
+        cur.execute(
+            "SELECT id, message_id FROM attendance_sessions WHERE id = ? AND group_id = ?",
+            (sid, group_id),
+        )
+
+    row = cur.fetchone()
+    if not row:
+        await update.message.reply_text("Session not found.")
+        return
+
+    session_id, message_id = row
+
+    # Mark as closed
+    cur.execute("UPDATE attendance_sessions SET closed = 1 WHERE id = ?", (session_id,))
+    conn.commit()
+
+    # Edit attendance message in group (optional)
+    try:
+        await update.effective_chat.bot.edit_message_text(
+            chat_id=chat.id,
+            message_id=message_id,
+            text=f"Attendance session {session_id} is now CLOSED.",
+        )
+    except:
+        pass
+
+    await update.message.reply_text(f"Session {session_id} has been closed.")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
-
-    if chat.type not in ("group", "supergroup"):
+    if chat.type in ("group", "supergroup"):
+        # ensure group exists
+        group_id = ensure_group(chat.id, chat.title)
+        admins = await context.bot.get_chat_administrators(chat.id)
+        if user.id in [admin.user.id for admin in admins]:
+            add_member_db(group_id, user.id, user.full_name, role="admin")
+        # add the user as admin by default if they are group creator? We keep simple: user must /register to be member
         await update.message.reply_text(
-            "Please add me to a group and use me there for attendance."
-        )
-        return
-
-    # Ensure group exists in DB
-    group_id = ensure_group(chat.id, chat.title)
-
-    # Check if this group already has at least one member
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM members WHERE group_id = ?", (group_id,))
-    member_count = cur.fetchone()[0]
-
-    # Register the person who sent /start (usually the group creator/admin)
-    role = "member"
-    full_name = user.full_name
-
-    if member_count == 0:
-        role = "admin"  # ← First person = admin automatically
-
-    add_member_db(group_id, user.id, full_name, role)
-
-    if role == "admin":
-        await update.message.reply_text(
-            "Hello! I'm AttendanceBot.\n\n"
-            f"Welcome {full_name}! As the first person to start me in this group, "
-            "you have been automatically made an admin.\n\n"
-            "• Members can now register with /register\n"
-            "• Start attendance with /attendance\n"
-            "• Schedule recurring sessions with /schedule\n"
-            "Enjoy!"
+            "Hello! I'm AttendanceBot. Members should register using /register <Full name>. Admins can add members with /add_member @username Full Name."
         )
     else:
         await update.message.reply_text(
-            "Hello! I'm AttendanceBot.\n"
-            "Members should register using /register <Full Name>.\n"
-            "Admins can start attendance with /attendance"
+            "Use me inside a group where you manage attendance."
         )
 
 
@@ -373,6 +415,12 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     group_id = ensure_group(chat.id, chat.title)
+
+    # Check if already registered
+    existing = get_member_by_telegram(group_id, user.id)
+    if existing:
+        await update.message.reply_text(f"You are already registered as {existing[1]}.")
+        return
     # parse name
     if context.args:
         full_name = " ".join(context.args)
@@ -565,6 +613,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif parts[0] == "mark":
         # mark:session:member:status
         _, session_id, member_id, status = parts
+
+        curcheck = conn.cursor()
+        curcheck.execute(
+            "SELECT closed FROM attendance_sessions WHERE id = ?", (session_id,)
+        )
+        crow = curcheck.fetchone()
+        if crow and crow[0] == 1:
+            await query.answer("This session has already been closed.", show_alert=True)
+            return
+
+        # mark:session:member:status
+        _, session_id, member_id, status = parts
+
         # verify
         cur = conn.cursor()
         cur.execute(
@@ -735,6 +796,7 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def register_handlers(app):
+    app.add_handler(CommandHandler("end_session", end_session))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("register", register))
